@@ -8,7 +8,7 @@
   python tcad_post.py rsxj n*_B.csv  --xj 20 --rs 600  --out B_rsxj.png
   python tcad_post.py oxC  n*_C.csv  --out C_orient.png
 
-공통 원칙 (교수님 피드백 반영)
+공통 원칙
   - 농도 축은 log, 범례는 그래프 바깥(프로파일을 가리지 않음)
   - 접합 깊이 Xj 를 점으로 찍고 범례에 숫자로 표기
   - 그림과 같은 이름의 .csv 표를 함께 저장 (발표 자료 표로 그대로 사용)
