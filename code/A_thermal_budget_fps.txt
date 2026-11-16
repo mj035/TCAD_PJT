@@ -1,0 +1,199 @@
+#header
+#endheader
+## ===========================================================================
+## A_thermal_budget_fps.cmd
+## Topic A : how much post-junction thermal budget can an already-activated
+##           p+/n junction tolerate?  (blanket wafer, implant + diffusion only)
+##
+## Flow    : N-well (P 1e18) -> BF2 p+ implant -> spike RTA (activation)
+##           -> post anneal at Tpost, measured at cumulative
+##              10/20/30/45/60/90/120/180/240 min
+##
+## SWB parameters
+##   Tpost  [C]     post-anneal temperature   e.g. 550 600 650 700 750 800 850 900
+##   Tspike [C]     spike RTA peak            e.g. 1050   (Part 2-2 : 1000 1050 1100)
+##   Eimp   [keV]   BF2 implant energy        e.g. 10     (Part 2-3 : 6 8 10)
+##   pai    0 | 1   Ge 20 keV 5e14 pre-amorphization   (Part 2-1)
+##   cdose  [cm-2]  carbon co-implant dose, 0 = none    (Part 2-1 : 0 1e15)
+##
+## Part 1 (diagnosis) : pai=0 cdose=0 Eimp=10 Tspike=1050, sweep Tpost
+## Part 2 (remedy)    : fix Tpost at the window edge found in Part 1, then
+##                      compare recipes (pai/cdose, Tspike, Eimp)
+##
+## Outputs per node
+##   n<node>_A.csv            one line per time point (Excel / Python ready)
+##   n<node>_t<min>.plx       BTotal / BActive / PTotal / NetActive profiles
+##   SWB table (DOE:)         Xj0, Rs0, dXj_240, dRs_240 ...
+## ===========================================================================
+
+AdvancedCalibration
+
+## ---- mesh : 1 nm down to 120 nm (covers Xj0 ~ 80 nm and the +10 % limit),
+##             5 nm at 300 nm, 20 nm at 1 um, substrate 2 um deep
+line x location= 0      spacing= 0.001 tag= top
+line x location= 0.12   spacing= 0.001
+line x location= 0.30   spacing= 0.005
+line x location= 1.0    spacing= 0.02
+line x location= 2.0    spacing= 0.1   tag= bottom
+
+line y location= -0.5 spacing= 0.25 tag= left
+line y location= 0.5  spacing= 0.25 tag= right
+
+region Silicon xlo= top xhi= bottom ylo= left yhi= right
+
+## ---- N-well background
+init concentration= 1E18 field= Phosphorus slice.angle= 180 !DelayFullD
+
+## ===========================================================================
+## helper procedures (all return -1 when the value cannot be extracted)
+## ===========================================================================
+proc Num { v {def -1.0} } {
+    set v [lindex $v 0]
+    if { [string is double -strict $v] } { return $v }
+    return $def
+}
+
+## junction depth [nm] : deepest zero crossing of NetActive in silicon
+proc XjNm {} {
+    if { [catch {
+        select z= NetActive
+        set raw [interpolate Silicon y= 0.0 value= 0.0]
+    }] } { return -1.0 }
+    set best -1.0
+    foreach v $raw {
+        if { ![string is double -strict $v] } { continue }
+        if { $v <= 0.0 } { continue }
+        if { $v < 1.0e-3 } { set v [expr {$v*1.0e4}] }
+        if { $v > $best } { set best $v }
+    }
+    if { $best < 0.0 } { return -1.0 }
+    return [expr {$best*1000.0}]
+}
+
+## integral of a field over the silicon layer (dose, cm-2)
+proc SiInt { field } {
+    if { [catch { select z= $field ; set L [layers y= 0.0] }] } { return -1.0 }
+    foreach row $L {
+        if { [string equal -nocase [lindex $row 3] "Silicon"] } {
+            return [Num [lindex $row 2]]
+        }
+    }
+    return -1.0
+}
+
+## sheet resistance [ohm/sq] of the p+ layer : Rs = 1 / ( q * Int( mu_p * p ) dx )
+## hole mobility = concentration-dependent boron mobility quoted in the
+## Sentaurus Process User Guide (Sheet Resistance section)
+proc RsOhm {} {
+    set g [SiInt "1.602e-19*BActive*(49.705+(467.729-49.705)/(1+abs(BActive/1.606e+17)^0.7))"]
+    if { $g <= 0.0 } { return -1.0 }
+    return [expr {1.0/$g}]
+}
+
+## sheet resistance [ohm/sq] reported by the tool itself (p-type layer),
+## kept as a cross-check of RsOhm
+proc RsTool {} {
+    if { [catch { set s [SheetResistance y= 0.0] }] } { return -1.0 }
+    if { [regexp {p-type\s+Sheet Resistance\s*=\s*([0-9.eE+-]+)} $s -> v] } { return $v }
+    return -1.0
+}
+
+proc Pct { a b } {
+    if { $b <= 0.0 || $a < 0.0 } { return -999.0 }
+    return [expr {100.0*($a-$b)/$b}]
+}
+
+## ===========================================================================
+## 1) p+ source/drain implant  (lecture DRAM flow : "B+ / BF2+ -> p+ S/D")
+##    optional remedy : Ge pre-amorphization and carbon co-implant before BF2
+## ===========================================================================
+set PAI   @pai@
+set CDOSE @cdose@
+
+if { $PAI == 1 } {
+    implant Germanium dose= 5e14<cm-2> energy= 20<keV> tilt= 0 rotation= 0
+}
+if { $CDOSE > 0 } {
+    implant Carbon dose= @cdose@<cm-2> energy= 4<keV> tilt= 0 rotation= 0
+}
+
+implant BF2 dose= 2e15<cm-2> energy= @Eimp@<keV> tilt= 7 rotation= 0
+
+SetPlxList { BTotal PTotal }
+WritePlx n@node@_asimpl.plx y=0 Silicon
+
+## ===========================================================================
+## 2) activation : spike RTA  (600C -> Tspike at 75 C/s, 1 s, back to 600C)
+## ===========================================================================
+set Tpk  @Tspike@
+set tup  [expr {($Tpk - 600.0)/75.0}]
+
+temp_ramp name= spike clear
+temp_ramp name= spike time= $tup<s> temperature= 600<C>  ramprate= 75<K/s>
+temp_ramp name= spike time= 1<s>    temperature= $Tpk<C>
+temp_ramp name= spike time= $tup<s> temperature= $Tpk<C> ramprate= -75<K/s>
+diffuse temp.ramp= spike
+
+set Xj0   [XjNm]
+set Rs0   [RsOhm]
+set Q0    [SiInt BTotal]
+set Qa0   [SiInt BActive]
+set Act0  -1.0
+if { $Q0 > 0.0 && $Qa0 >= 0.0 } { set Act0 [expr {100.0*$Qa0/$Q0}] }
+
+puts "=== recipe : pai= @pai@ cdose= @cdose@ Eimp= @Eimp@ keV Tspike= @Tspike@ C ==="
+puts "=== reference (after spike) : Xj0= [format %.2f $Xj0] nm  Rs0= [format %.1f $Rs0] ohm/sq  dose= $Q0  active= [format %.1f $Act0] % ==="
+catch { puts "SheetResistance (tool) after spike : [SheetResistance y= 0.0]" }
+
+puts "DOE: Xj0_nm [format %.2f $Xj0]"
+puts "DOE: Rs0 [format %.1f $Rs0]"
+puts "DOE: Act0_pct [format %.1f $Act0]"
+
+SetPlxList { BTotal BActive PTotal NetActive }
+WritePlx n@node@_t0.plx y=0 Silicon
+struct tdr= n@node@_spike
+
+set fp [open "n@node@_A.csv" w]
+puts $fp "node,pai,cdose,Eimp_keV,Tspike_C,Tpost_C,t_min,Xj_nm,dXj_nm,dXj_pct,Rs_ohm,dRs_pct,dose_cm2,active_pct,Rs_tool_ohm"
+puts $fp "@node@,@pai@,@cdose@,@Eimp@,@Tspike@,@Tpost@,0,$Xj0,0,0,$Rs0,0,$Q0,$Act0,[RsTool]"
+close $fp
+
+## ===========================================================================
+## 3) post-junction thermal budget : cumulative
+##    10 / 20 / 30 / 45 / 60 / 90 / 120 / 180 / 240 min
+## ===========================================================================
+set tcum 0
+foreach dt { 10 10 10 15 15 30 30 60 60 } {
+
+    diffuse temperature= @Tpost@<C> time= $dt<min>
+
+    set tcum [expr {$tcum + $dt}]
+
+    set Xj   [XjNm]
+    set Rs   [RsOhm]
+    set Q    [SiInt BTotal]
+    set Qa   [SiInt BActive]
+    set Act  -1.0
+    if { $Q > 0.0 && $Qa >= 0.0 } { set Act [expr {100.0*$Qa/$Q}] }
+
+    set dXj  -999.0
+    if { $Xj > 0.0 && $Xj0 > 0.0 } { set dXj [expr {$Xj - $Xj0}] }
+    set dXjp [Pct $Xj $Xj0]
+    set dRsp [Pct $Rs $Rs0]
+
+    puts "=== Tpost= @Tpost@ C  t= $tcum min : Xj= [format %.2f $Xj] nm (dXj= [format %.2f $dXj] nm, [format %.1f $dXjp] %)  Rs= [format %.1f $Rs] ohm/sq ([format %.1f $dRsp] %)  active= [format %.1f $Act] % ==="
+
+    puts "DOE: dXj_${tcum} [format %.2f $dXj]"
+    puts "DOE: dRs_${tcum} [format %.1f $dRsp]"
+
+    set fp [open "n@node@_A.csv" a]
+    puts $fp "@node@,@pai@,@cdose@,@Eimp@,@Tspike@,@Tpost@,$tcum,$Xj,$dXj,$dXjp,$Rs,$dRsp,$Q,$Act,[RsTool]"
+    close $fp
+
+    SetPlxList { BTotal BActive PTotal NetActive }
+    WritePlx n@node@_t${tcum}.plx y=0 Silicon
+}
+
+catch { puts "SheetResistance (tool) at the end : [SheetResistance y= 0.0]" }
+
+struct tdr= n@node@_final

@@ -1,0 +1,104 @@
+#header
+#endheader
+## ===========================================================================
+## 00_smoke_test_fps.cmd
+## Purpose : check, in one short run, that every command used by the project
+##           decks (A / B / C) works on this server (Sentaurus Process).
+## SWB parameters : none
+## How to read    : open the node output (n<node>_fps.out / .log) and search
+##                  for the word CHECK. Each line says PASS or FAIL.
+## ===========================================================================
+
+AdvancedCalibration
+
+## ---- mesh (same style as the lecture example, finer near the surface)
+line x location= 0      spacing= 0.001 tag= top
+line x location= 0.05   spacing= 0.002
+line x location= 0.2    spacing= 0.01
+line x location= 1.0    spacing= 0.1   tag= bottom
+
+line y location= -0.5 spacing= 0.25 tag= left
+line y location= 0.5  spacing= 0.25 tag= right
+
+region Silicon xlo= top xhi= bottom ylo= left yhi= right
+
+init concentration= 1E18 field= Phosphorus slice.angle= 180 !DelayFullD
+
+## ---- CHECK 1 : implant species used in deck B
+if { [catch { implant Germanium dose= 5e14<cm-2> energy= 20<keV> tilt= 0 rotation= 0 } msg] } {
+    puts "CHECK1a FAIL (Germanium implant): $msg"
+} else { puts "CHECK1a PASS (Germanium implant)" }
+
+if { [catch { implant Carbon dose= 1e15<cm-2> energy= 4<keV> tilt= 0 rotation= 0 } msg] } {
+    puts "CHECK1b FAIL (Carbon implant): $msg"
+} else { puts "CHECK1b PASS (Carbon implant)" }
+
+if { [catch { implant BF2 dose= 1e15<cm-2> energy= 5<keV> tilt= 0 rotation= 0 } msg] } {
+    puts "CHECK1c FAIL (BF2 implant): $msg"
+} else { puts "CHECK1c PASS (BF2 implant)" }
+
+## ---- CHECK 2 : spike RTA written with temp_ramp
+set Tpk  1050.0
+set tup  [expr {($Tpk - 600.0)/75.0}]
+set tdn  [expr {($Tpk - 600.0)/75.0}]
+if { [catch {
+    temp_ramp name= spike clear
+    temp_ramp name= spike time= $tup<s> temperature= 600<C>   ramprate= 75<K/s>
+    temp_ramp name= spike time= 1<s>    temperature= $Tpk<C>
+    temp_ramp name= spike time= $tdn<s> temperature= $Tpk<C>  ramprate= -75<K/s>
+    diffuse temp.ramp= spike
+} msg] } {
+    puts "CHECK2 FAIL (temp_ramp spike): $msg"
+} else { puts "CHECK2 PASS (temp_ramp spike)" }
+
+## ---- CHECK 3 : junction depth by interpolate (look at the unit of the number)
+if { [catch {
+    select z= NetActive
+    set raw [interpolate Silicon y= 0.0 value= 0.0]
+} msg] } {
+    puts "CHECK3 FAIL (interpolate NetActive): $msg"
+} else { puts "CHECK3 PASS raw junction position(s) = <$raw>   (expect about 0.03-0.08 if um, 3e-6-8e-6 if cm)" }
+
+## ---- CHECK 4 : SheetResistance (see what it prints / returns)
+if { [catch { set rs [SheetResistance y= 0.0] } msg] } {
+    puts "CHECK4 FAIL (SheetResistance): $msg"
+} else { puts "CHECK4 PASS SheetResistance return value = <$rs>" }
+
+## ---- CHECK 5 : dose by layers, and field names
+foreach f { BTotal BActive Boron PTotal Carbon Germanium Fluorine } {
+    if { [catch { select z= $f ; set L [layers y= 0.0] } msg] } {
+        puts "CHECK5 FAIL field $f : $msg"
+    } else { puts "CHECK5 PASS field $f : layers = $L" }
+}
+
+## ---- CHECK 6 : sheet conductance by a select expression (used for Rs)
+if { [catch {
+    select z= "1.602e-19*BActive*(49.705+(467.729-49.705)/(1+abs(BActive/1.606e+17)^0.7))"
+    set L [layers y= 0.0]
+} msg] } {
+    puts "CHECK6 FAIL (select expression): $msg"
+} else { puts "CHECK6 PASS conductance layers = $L   (Rs = 1/Integral of the Silicon row)" }
+
+SetPlxList { BTotal BActive PTotal NetActive }
+WritePlx n@node@_smoke_spike.plx y=0 Silicon
+
+## ---- CHECK 7 : dry / wet / ISSG oxidation and oxide thickness (deck C)
+grid set.min.normal.size= 0.5<nm> set.normal.growth.ratio.2d= 1.4
+
+if { [catch { diffuse temperature= 900<C> time= 2<min> O2 } msg] } {
+    puts "CHECK7a FAIL (dry O2): $msg"
+} else { puts "CHECK7a PASS (dry O2) layers = [layers y= 0.0]" }
+
+if { [catch { diffuse temperature= 1000<C> time= 0.5<min> pressure= 12<torr> flowH2= 6 flowO2= 12 ISSG } msg] } {
+    puts "CHECK7b FAIL (ISSG): $msg"
+} else { puts "CHECK7b PASS (ISSG) layers = [layers y= 0.0]" }
+
+if { [catch { diffuse temperature= 800<C> time= 1<min> H2O } msg] } {
+    puts "CHECK7c FAIL (wet H2O): $msg"
+} else { puts "CHECK7c PASS (wet H2O) layers = [layers y= 0.0]" }
+
+SetPlxList { BTotal PTotal NetActive }
+WritePlx n@node@_smoke_ox.plx y=0
+struct tdr= n@node@_smoke !Gas !interfaces
+
+puts "CHECK END"

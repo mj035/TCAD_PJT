@@ -1,0 +1,31 @@
+# Sentaurus 실행 부산물: 서버 경로·계정이 찍히거나 용량이 큼
+*.tdr
+*.out
+*.err
+*.job
+*.sta
+*.log
+glog.txt
+gsummary.txt
+gvars.dat
+gtree.dat
+gscens.dat
+gcomments.dat
+.status
+.project
+.database
+.history
+.organization
+*.backup
+*.prf
+
+# Python
+__pycache__/
+*.pyc
+
+# 올리지 않는 자료: 접속 정보, 수강생 명단, 강의 자료
+공지모음.txt
+*.pptx
+*.pdf
+# docs 폴더에 직접 넣은 문서는 올린다
+!docs/*.pdf
